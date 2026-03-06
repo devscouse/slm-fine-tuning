@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from email_triage.data import EmailDataset
-from email_triage.labels import NUM_LABELS, LABEL_NAMES
+from email_triage.labels import label_to_index
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -20,17 +20,17 @@ SAMPLE_RECORDS = [
     {
         "subject": "Urgent invoice due",
         "body": "Please pay by end of day.",
-        "labels": ["urgent", "action_required"],
+        "label": "attention",
     },
     {
         "subject": "Weekly newsletter",
         "body": "Here are the top stories this week.",
-        "labels": ["newsletters"],
+        "label": "notice",
     },
     {
         "subject": "Order shipped",
         "body": "Your order #1234 has shipped.",
-        "labels": ["order_confirmation"],
+        "label": "ignore",
     },
 ]
 
@@ -77,21 +77,24 @@ def test_item_keys(dataset: EmailDataset) -> None:
     assert set(item.keys()) == {"input_ids", "attention_mask", "labels"}
 
 
-def test_label_vector_shape(dataset: EmailDataset) -> None:
+def test_label_is_scalar_long(dataset: EmailDataset) -> None:
     item = dataset[0]
-    assert item["labels"].shape == (NUM_LABELS,)
-    assert item["labels"].dtype == torch.float32
+    assert item["labels"].shape == ()
+    assert item["labels"].dtype == torch.long
 
 
 def test_label_values(dataset: EmailDataset) -> None:
-    # First record: urgent + action_required
+    # First record: "attention" -> index 0
     item = dataset[0]
-    labels_tensor = item["labels"]
-    expected = torch.tensor(
-        [1 if n in ("urgent", "action_required") else 0 for n in LABEL_NAMES],
-        dtype=torch.float,
-    )
-    assert torch.equal(labels_tensor, expected)
+    assert item["labels"].item() == label_to_index("attention")
+
+    # Second record: "notice" -> index 1
+    item = dataset[1]
+    assert item["labels"].item() == label_to_index("notice")
+
+    # Third record: "ignore" -> index 2
+    item = dataset[2]
+    assert item["labels"].item() == label_to_index("ignore")
 
 
 def test_input_ids_shape(dataset: EmailDataset) -> None:

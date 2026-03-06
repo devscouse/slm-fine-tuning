@@ -10,5 +10,10 @@ wheels/
 .venv
 
 .env
+secrets/
 
 data
+.claude
+*.db
+outputs
+models

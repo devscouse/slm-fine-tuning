@@ -1,9 +1,9 @@
 """
-Model module for multi-label email triage classification.
+Model module for multi-class email triage classification.
 
 Backbone is model-agnostic: any HuggingFace encoder can be selected by name.
 The classification head is a single linear layer over a pooled representation.
-Training uses BCEWithLogitsLoss (raw logits); inference uses predict_proba (sigmoid).
+Training uses CrossEntropyLoss (raw logits); inference uses predict_proba (softmax).
 """
 
 from __future__ import annotations
@@ -14,16 +14,16 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModel
 
-from email_triage.labels import NUM_LABELS
+from email_triage.labels import NUM_CLASSES
 
 
 class EmailTriageClassifier(nn.Module):
     """
-    Encoder backbone + binary classification head for multi-label email triage.
+    Encoder backbone + classification head for multi-class email triage.
 
     Args:
         model_name: HuggingFace model identifier (e.g. "distilbert-base-uncased").
-        num_labels:  Number of output labels. Defaults to NUM_LABELS (7).
+        num_classes: Number of output classes. Defaults to NUM_CLASSES (4).
         dropout:     Dropout probability applied before the linear head.
         pooling:     "cls" uses the first token; "mean" averages non-padding tokens.
     """
@@ -31,7 +31,7 @@ class EmailTriageClassifier(nn.Module):
     def __init__(
         self,
         model_name: str,
-        num_labels: int = NUM_LABELS,
+        num_classes: int = NUM_CLASSES,
         dropout: float = 0.1,
         pooling: Literal["cls", "mean"] = "cls",
     ) -> None:
@@ -44,7 +44,7 @@ class EmailTriageClassifier(nn.Module):
 
         self.backbone = AutoModel.from_pretrained(model_name)
         self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(hidden_size, num_labels)
+        self.classifier = nn.Linear(hidden_size, num_classes)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -71,7 +71,7 @@ class EmailTriageClassifier(nn.Module):
         self,
         input_ids: torch.Tensor,       # (B, L)
         attention_mask: torch.Tensor,  # (B, L)
-    ) -> torch.Tensor:                 # (B, num_labels) — raw logits
+    ) -> torch.Tensor:                 # (B, num_classes) — raw logits
         outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
         pooled = self._pool(outputs.last_hidden_state, attention_mask)
         return self.classifier(self.dropout(pooled))
@@ -81,8 +81,8 @@ class EmailTriageClassifier(nn.Module):
         self,
         input_ids: torch.Tensor,       # (B, L)
         attention_mask: torch.Tensor,  # (B, L)
-    ) -> torch.Tensor:                 # (B, num_labels) — probabilities in [0, 1]
-        return torch.sigmoid(self.forward(input_ids, attention_mask))
+    ) -> torch.Tensor:                 # (B, num_classes) — probabilities summing to 1
+        return torch.softmax(self.forward(input_ids, attention_mask), dim=-1)
 
 
 # ---------------------------------------------------------------------------

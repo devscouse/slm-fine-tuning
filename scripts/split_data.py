@@ -1,6 +1,7 @@
-"""Split a validated JSONL into train / val / test sets (70/15/15)."""
+"""Split validated JSONL file(s) into train / val / test sets (70/15/15)."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -28,24 +29,58 @@ def _write_jsonl(records: list[dict], path: Path) -> None:
             f.write(json.dumps(record) + "\n")
 
 
+def _deduplicate(records: list[dict]) -> list[dict]:
+    """Remove duplicate records by (subject, body) hash."""
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for r in records:
+        key = hashlib.sha256(
+            (r.get("subject", "") + r.get("body", "")).encode()
+        ).hexdigest()
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+    return unique
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Split email JSONL into train/val/test.")
-    parser.add_argument("--input", default="data/synthetic/emails.jsonl")
+    parser.add_argument(
+        "--input",
+        nargs="+",
+        default=["data/synthetic/emails.jsonl"],
+        help="One or more JSONL input files",
+    )
     parser.add_argument("--outdir", default="data/processed")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    records = _read_jsonl(Path(args.input))
+    # Concatenate records from all input files
+    records: list[dict] = []
+    for input_path in args.input:
+        p = Path(input_path)
+        if p.exists():
+            records.extend(_read_jsonl(p))
+        else:
+            print(f"Warning: {input_path} not found, skipping")
+
+    records = _deduplicate(records)
     outdir = Path(args.outdir)
 
-    train, temp = train_test_split(records, test_size=0.30, random_state=args.seed)
-    val, test = train_test_split(temp, test_size=0.50, random_state=args.seed)
+    labels = [r["label"] for r in records]
+
+    train, temp, train_labels, temp_labels = train_test_split(
+        records, labels, test_size=0.30, random_state=args.seed, stratify=labels,
+    )
+    val, test = train_test_split(
+        temp, test_size=0.50, random_state=args.seed, stratify=temp_labels,
+    )
 
     _write_jsonl(train, outdir / "train.jsonl")
     _write_jsonl(val, outdir / "val.jsonl")
     _write_jsonl(test, outdir / "test.jsonl")
 
-    print(f"Total          : {len(records)}")
+    print(f"Total (deduped): {len(records)}")
     print(f"Train          : {len(train)}")
     print(f"Val            : {len(val)}")
     print(f"Test           : {len(test)}")

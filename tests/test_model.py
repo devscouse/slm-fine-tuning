@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from email_triage.labels import NUM_LABELS
+from email_triage.labels import NUM_CLASSES
 from email_triage.model import EmailTriageClassifier, build_classifier
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def mean_classifier() -> EmailTriageClassifier:
 def test_forward_output_shape(classifier: EmailTriageClassifier) -> None:
     input_ids, attention_mask = _make_inputs()
     logits = classifier(input_ids, attention_mask)
-    assert logits.shape == (BATCH_SIZE, NUM_LABELS)
+    assert logits.shape == (BATCH_SIZE, NUM_CLASSES)
     assert logits.dtype == torch.float32
 
 
@@ -96,9 +96,16 @@ def test_forward_returns_raw_logits(classifier: EmailTriageClassifier) -> None:
 def test_predict_proba_range(classifier: EmailTriageClassifier) -> None:
     input_ids, attention_mask = _make_inputs()
     probs = classifier.predict_proba(input_ids, attention_mask)
-    assert probs.shape == (BATCH_SIZE, NUM_LABELS)
+    assert probs.shape == (BATCH_SIZE, NUM_CLASSES)
     assert probs.min() >= 0.0
     assert probs.max() <= 1.0
+
+
+def test_predict_proba_sums_to_one(classifier: EmailTriageClassifier) -> None:
+    input_ids, attention_mask = _make_inputs()
+    probs = classifier.predict_proba(input_ids, attention_mask)
+    row_sums = probs.sum(dim=-1)
+    assert torch.allclose(row_sums, torch.ones(BATCH_SIZE), atol=1e-5)
 
 
 def test_predict_proba_no_grad(classifier: EmailTriageClassifier) -> None:

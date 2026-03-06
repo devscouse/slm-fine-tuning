@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from email_triage.labels import LABEL_NAMES
+from email_triage.labels import CLASS_NAMES
 
 
 def _hash(record: dict) -> str:
@@ -23,12 +23,9 @@ def validate(record: dict) -> str | None:
         return "missing/empty subject"
     if not isinstance(record.get("body"), str) or not record["body"].strip():
         return "missing/empty body"
-    labels = record.get("labels")
-    if not isinstance(labels, list) or len(labels) == 0:
-        return "labels must be a non-empty list"
-    unknown = [l for l in labels if l not in LABEL_NAMES]
-    if unknown:
-        return f"unknown labels: {unknown}"
+    label = record.get("label")
+    if not isinstance(label, str) or label not in CLASS_NAMES:
+        return f"label must be one of {CLASS_NAMES}, got {label!r}"
     return None
 
 

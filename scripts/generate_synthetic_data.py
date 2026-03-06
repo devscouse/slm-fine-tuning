@@ -7,16 +7,14 @@ Usage:
 Environment variables:
     GOOGLE_API_KEY   — required when using the Gemini provider
 
-The script cycles through a curated set of label-combination "scenarios" to
-ensure balanced coverage of all 7 labels, then generates `--batch` emails per
-API call until `--count` examples have been collected.
+The script cycles through 4 class-specific scenarios to ensure balanced coverage,
+then generates `--batch` emails per API call until `--count` examples have been collected.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
 import re
 import sys
@@ -28,52 +26,37 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from email_triage.data.llm import get_provider
-from email_triage.labels import LABEL_NAMES, LABELS
+from email_triage.labels import CLASS_NAMES, CLASSES
 
 
 # ---------------------------------------------------------------------------
 # Scenario definitions
-# Each scenario specifies which labels must appear on every email in that batch.
-# Scenarios are cycled in order so every label gets roughly equal coverage.
+# Each scenario specifies which class the generated emails should belong to.
 # ---------------------------------------------------------------------------
 
 SCENARIOS: list[dict] = [
-    # Single-label
-    {"labels": ["urgent"]},
-    {"labels": ["needs_reply"]},
-    {"labels": ["action_required"]},
-    {"labels": ["order_confirmation"]},
-    {"labels": ["alerts"]},
-    {"labels": ["calendar_event"]},
-    {"labels": ["newsletters"]},
-    # Common multi-label combos
-    {"labels": ["urgent", "needs_reply"]},
-    {"labels": ["urgent", "action_required"]},
-    {"labels": ["action_required", "needs_reply"]},
-    {"labels": ["urgent", "action_required", "needs_reply"]},
-    {"labels": ["alerts", "urgent"]},
-    {"labels": ["calendar_event", "needs_reply"]},
+    {"label": "attention"},
+    {"label": "notice"},
+    {"label": "ignore"},
+    {"label": "security"},
 ]
 
 
-def _label_descriptions() -> str:
-    return "\n".join(f'  "{l.name}": {l.description}' for l in LABELS)
+def _class_descriptions() -> str:
+    return "\n".join(f'  "{c.name}": {c.description}' for c in CLASSES)
 
 
-def _build_prompt(required_labels: list[str], batch_size: int) -> str:
-    all_labels_str = json.dumps(LABEL_NAMES)
-    required_str = json.dumps(required_labels)
-    desc_str = _label_descriptions()
+def _build_prompt(target_class: str, batch_size: int) -> str:
+    desc_str = _class_descriptions()
 
     return f"""You are generating a synthetic email dataset for a machine-learning project.
 
-Label taxonomy (all valid labels):
+Class taxonomy (4 mutually exclusive classes):
 {desc_str}
 
 Task:
-Generate exactly {batch_size} realistic-looking emails. Each email MUST carry
-ALL of the following labels: {required_str}
-Each email MAY also carry additional labels from {all_labels_str} if they fit naturally.
+Generate exactly {batch_size} realistic-looking emails. Each email MUST belong to
+the class: "{target_class}"
 
 Rules:
 - Vary the writing style (formal, casual, automated/system-generated).
@@ -88,13 +71,13 @@ JSON format (array of {batch_size} objects):
   {{
     "subject": "<email subject>",
     "body": "<email body>",
-    "labels": ["<label1>", ...]
+    "label": "{target_class}"
   }},
   ...
 ]"""
 
 
-def _parse_response(text: str, required_labels: list[str]) -> list[dict]:
+def _parse_response(text: str, target_class: str) -> list[dict]:
     """Extract and validate the JSON array from the model's response."""
     # Strip optional markdown code fences
     text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
@@ -114,24 +97,21 @@ def _parse_response(text: str, required_labels: list[str]) -> list[dict]:
             continue
         subject = str(item.get("subject", "")).strip()
         body = str(item.get("body", "")).strip()
-        labels = item.get("labels", [])
+        label = item.get("label", "")
 
         if not subject or not body:
             continue
-        # Keep only recognised labels
-        labels = [l for l in labels if l in LABEL_NAMES]
-        # Enforce required labels
-        for rl in required_labels:
-            if rl not in labels:
-                labels.append(rl)
+        # Validate label — force to target class if unrecognised
+        if label not in CLASS_NAMES:
+            label = target_class
 
-        valid.append({"subject": subject, "body": body, "labels": labels})
+        valid.append({"subject": subject, "body": body, "label": label})
 
     return valid
 
 
-def _label_frequencies(paths: list[Path]) -> dict[str, float]:
-    """Return per-label frequency (appearances / total records) from JSONL files."""
+def _class_frequencies(paths: list[Path]) -> dict[str, float]:
+    """Return per-class frequency (appearances / total records) from JSONL files."""
     counts: Counter = Counter()
     total = 0
     for path in paths:
@@ -144,29 +124,29 @@ def _label_frequencies(paths: list[Path]) -> dict[str, float]:
                     continue
                 try:
                     record = json.loads(line)
-                    for label in record.get("labels", []):
-                        if label in LABEL_NAMES:
-                            counts[label] += 1
+                    label = record.get("label", "")
+                    if label in CLASS_NAMES:
+                        counts[label] += 1
                     total += 1
                 except (json.JSONDecodeError, AttributeError):
                     print(f"  [warn] skipping malformed line in {path}")
     if total == 0:
-        return {label: 0.0 for label in LABEL_NAMES}
-    return {label: counts[label] / total for label in LABEL_NAMES}
+        return {name: 0.0 for name in CLASS_NAMES}
+    return {name: counts[name] / total for name in CLASS_NAMES}
 
 
 def _scenario_weights(freqs: dict[str, float]) -> list[float]:
-    """Derive per-scenario sampling weights from per-label frequencies.
+    """Derive per-scenario sampling weights from per-class frequencies.
 
-    Scenarios whose required labels are underrepresented receive higher weights.
+    Scenarios whose class is underrepresented receive higher weights.
     Falls back to uniform weights when no data exists or distribution is already balanced.
     """
     # No data at all — use uniform weights
     if all(v == 0.0 for v in freqs.values()):
         return [1.0] * len(SCENARIOS)
 
-    target = sum(freqs.values()) / len(LABEL_NAMES)  # mean observed rate
-    deficit = {label: max(0.0, target - freqs[label]) for label in LABEL_NAMES}
+    target = sum(freqs.values()) / len(CLASS_NAMES)  # mean observed rate
+    deficit = {name: max(0.0, target - freqs[name]) for name in CLASS_NAMES}
 
     # Already balanced — use uniform weights
     if max(deficit.values()) == 0.0:
@@ -174,7 +154,7 @@ def _scenario_weights(freqs: dict[str, float]) -> list[float]:
 
     weights = []
     for scenario in SCENARIOS:
-        raw = sum(deficit[label] for label in scenario["labels"])
+        raw = deficit[scenario["label"]]
         weights.append(max(1.0, raw))  # floor of 1.0: no scenario is fully starved
     return weights
 
@@ -193,7 +173,7 @@ def generate(
     _existing = list(existing_paths or [])
     if out_path not in _existing:
         _existing.append(out_path)  # always include out_path if it already exists
-    freqs = _label_frequencies(_existing)
+    freqs = _class_frequencies(_existing)
     weights = _scenario_weights(freqs)
     batches_since_reweight = 0
     REWEIGHT_EVERY = 15
@@ -211,20 +191,20 @@ def generate(
             # Recompute weights from in-memory collected data
             counts: Counter = Counter()
             for rec in collected:
-                for lbl in rec["labels"]:
-                    if lbl in LABEL_NAMES:
-                        counts[lbl] += 1
+                label = rec.get("label", "")
+                if label in CLASS_NAMES:
+                    counts[label] += 1
             if collected:
-                mid_freqs = {lbl: counts[lbl] / len(collected) for lbl in LABEL_NAMES}
+                mid_freqs = {name: counts[name] / len(collected) for name in CLASS_NAMES}
                 weights = _scenario_weights(mid_freqs)
             batches_since_reweight = 0
-        required = scenario["labels"]
-        prompt = _build_prompt(required, batch_size)
+        target_class = scenario["label"]
+        prompt = _build_prompt(target_class, batch_size)
 
         for attempt in range(1, max_retries + 1):
             try:
                 response = provider.complete(prompt)
-                batch = _parse_response(response, required)
+                batch = _parse_response(response, target_class)
                 break
             except (ValueError, Exception) as exc:
                 if attempt == max_retries:
@@ -236,7 +216,7 @@ def generate(
                     time.sleep(wait)
 
         collected.extend(batch)
-        print(f"  {len(collected)}/{target_count} collected (scenario: {required})")
+        print(f"  {len(collected)}/{target_count} collected (class: {target_class})")
 
         # Brief pause to stay within free-tier rate limits
         time.sleep(1.0)
@@ -252,25 +232,24 @@ def generate(
     print(f"\nSaved {len(collected)} emails to {out_path}")
 
     # --- this run ---
-    label_counts: Counter = Counter()
+    class_counts: Counter = Counter()
     for email in collected:
-        for label in email["labels"]:
-            label_counts[label] += 1
-    print(f"\nLabel distribution — this run ({len(collected)} emails):")
-    for label in LABEL_NAMES:
-        count = label_counts[label]
+        class_counts[email["label"]] += 1
+    print(f"\nClass distribution — this run ({len(collected)} emails):")
+    for name in CLASS_NAMES:
+        count = class_counts[name]
         pct = count / len(collected) * 100
-        print(f"  {label:<20} {count:>4}  ({pct:.1f}%)")
+        print(f"  {name:<20} {count:>4}  ({pct:.1f}%)")
 
     # --- full dataset on disk ---
-    full_freqs = _label_frequencies([out_path])
+    full_freqs = _class_frequencies([out_path])
     full_total = sum(1 for _ in out_path.open(encoding="utf-8") if _.strip())
     if full_total > len(collected):          # only worth printing if there's prior data
-        print(f"\nLabel distribution — full dataset ({full_total} emails):")
-        for label in LABEL_NAMES:
-            count = round(full_freqs[label] * full_total)
-            pct = full_freqs[label] * 100
-            print(f"  {label:<20} {count:>4}  ({pct:.1f}%)")
+        print(f"\nClass distribution — full dataset ({full_total} emails):")
+        for name in CLASS_NAMES:
+            count = round(full_freqs[name] * full_total)
+            pct = full_freqs[name] * 100
+            print(f"  {name:<20} {count:>4}  ({pct:.1f}%)")
 
 
 def main() -> None:
@@ -291,7 +270,7 @@ def main() -> None:
         default=[],
         metavar="FILE",
         help=(
-            "Additional JSONL file(s) to read when computing initial label frequencies. "
+            "Additional JSONL file(s) to read when computing initial class frequencies. "
             "The --out file is always included automatically if it already exists."
         ),
     )

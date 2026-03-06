@@ -1,61 +1,58 @@
 """
-Label taxonomy for the email triage multi-label classification task.
+Label taxonomy for the email triage multi-class classification task.
 
-An email can carry any combination of these labels simultaneously.
-For example, a time-sensitive purchase confirmation might be:
-    [URGENT, ACTION_REQUIRED, ORDER_CONFIRMATION]
+Every email is assigned exactly one of four mutually exclusive classes:
+Attention, Notice, Ignore, Security.
 """
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class Label:
+class ClassDef:
     name: str
     description: str
 
 
-LABELS: list[Label] = [
-    Label(
-        name="urgent",
-        description="Time-sensitive; needs attention today or risk of a missed deadline / escalation.",
+CLASSES: list[ClassDef] = [
+    ClassDef(
+        name="attention",
+        description="Requires the recipient to take a meaningful action — something will be missed or delayed otherwise.",
     ),
-    Label(
-        name="needs_reply",
-        description="The sender explicitly expects or is waiting for a response.",
+    ClassDef(
+        name="notice",
+        description="Contains useful information but does not require any action. Reading is enough.",
     ),
-    Label(
-        name="action_required",
-        description="The recipient must take a concrete action (approve, sign, submit, fix, etc.).",
+    ClassDef(
+        name="ignore",
+        description="Entirely unimportant for day-to-day activity; exists mainly as a searchable record.",
     ),
-    Label(
-        name="order_confirmation",
-        description="Confirms a purchase, shipment, or subscription sign-up.",
-    ),
-    Label(
-        name="alerts",
-        description="Automated system or service alert (security notice, outage, threshold breach).",
-    ),
-    Label(
-        name="calendar_event",
-        description="Meeting invite, scheduling request, RSVP, or calendar update.",
-    ),
-    Label(
-        name="newsletters",
-        description="Newsletter, marketing digest, promotional email, or mailing-list post.",
+    ClassDef(
+        name="security",
+        description="Related to account security or identity verification (MFA codes, password resets, alerts).",
     ),
 ]
 
-# Ordered list of label names — used as the fixed output vector for the model.
-LABEL_NAMES: list[str] = [label.name for label in LABELS]
-NUM_LABELS: int = len(LABEL_NAMES)
+CLASS_NAMES: list[str] = [c.name for c in CLASSES]
+NUM_CLASSES: int = len(CLASS_NAMES)
+
+# Backward-compat aliases
+LABEL_NAMES = CLASS_NAMES
+NUM_LABELS = NUM_CLASSES
+
+_NAME_TO_INDEX: dict[str, int] = {name: i for i, name in enumerate(CLASS_NAMES)}
 
 
-def label_vector(active_labels: list[str]) -> list[int]:
-    """Convert a list of active label names into a binary vector."""
-    return [1 if name in active_labels else 0 for name in LABEL_NAMES]
+def label_to_index(label: str) -> int:
+    """Convert a class name string to its integer index."""
+    try:
+        return _NAME_TO_INDEX[label]
+    except KeyError:
+        raise ValueError(f"Unknown class label {label!r}. Valid: {CLASS_NAMES}") from None
 
 
-def vector_to_labels(vector: list[int], threshold: float = 0.5) -> list[str]:
-    """Convert a binary (or probability) vector back into label names."""
-    return [name for name, val in zip(LABEL_NAMES, vector) if val >= threshold]
+def index_to_label(index: int) -> str:
+    """Convert an integer index back to its class name string."""
+    if not 0 <= index < NUM_CLASSES:
+        raise ValueError(f"Index {index} out of range [0, {NUM_CLASSES})")
+    return CLASS_NAMES[index]
